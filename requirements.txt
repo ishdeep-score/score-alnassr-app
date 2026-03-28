@@ -1,7 +1,10 @@
-streamlit==1.55.0
-mplsoccer==1.6.1
-matplotlib==3.10.8
-plotly==6.6.0
-pandas==2.3.0
-numpy==2.3.1
-requests==2.32.4
+streamlit
+matplotlib
+mplsoccer
+plotly
+pandas
+numpy
+requests
+scipy
+openai
+google-generativeai
