@@ -19,6 +19,20 @@ import numpy as np
 import requests
 from io import BytesIO
 
+try:
+    import openai as _openai_lib
+    _OPENAI_AVAILABLE = True
+except ImportError:
+    _OPENAI_AVAILABLE = False
+
+try:
+    import google.generativeai as _genai_lib
+    _GEMINI_AVAILABLE = True
+except ImportError:
+    _GEMINI_AVAILABLE = False
+
+_AI_AVAILABLE = _OPENAI_AVAILABLE or _GEMINI_AVAILABLE
+
 
 def _hex_to_rgba(hex_color: str, alpha: float = 0.13) -> str:
     """Convert '#rrggbb' to 'rgba(r,g,b,a)' for Plotly fillcolor."""
@@ -113,6 +127,219 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+# ─── AI Analysis Helpers ──────────────────────────────────────────────────────
+
+def _build_prompt(match, tab: str) -> str:
+    """Build a context-rich prompt for Claude based on the current tab."""
+    m = match.meta
+    home_id, away_id = m['home_id'], m['away_id']
+    hs = match.stats.get(home_id, {})
+    aws = match.stats.get(away_id, {})
+    ppda_h = match.ppda.get(home_id, 0)
+    ppda_a = match.ppda.get(away_id, 0)
+
+    # Goals
+    goals_df = match.goals if hasattr(match.goals, 'iterrows') else pd.DataFrame()
+    if not goals_df.empty:
+        lines = []
+        for _, g in goals_df.iterrows():
+            team = m['home_name'] if g.get('team_id') == home_id else m['away_name']
+            lines.append(f"  {g.get('match_minute', '?')}' — {g.get('player_name', 'Unknown')} ({team}), xG: {g.get('xg', 0):.2f}")
+        goals_text = "\n".join(lines)
+    else:
+        goals_text = "  No goals recorded"
+
+    # Cards
+    cards_df = match.cards if hasattr(match.cards, 'iterrows') else pd.DataFrame()
+    if not cards_df.empty:
+        lines = []
+        for _, c in cards_df.iterrows():
+            team = m['home_name'] if c.get('team_id') == home_id else m['away_name']
+            lines.append(f"  {c.get('match_minute', '?')}' — {c.get('player_name', 'Unknown')} ({team}) [{c.get('card_type', '?')}]")
+        cards_text = "\n".join(lines)
+    else:
+        cards_text = "  None"
+
+    base = f"""Match: {m['home_name']} {m['home_score']}–{m['away_score']} {m['away_name']}
+Date: {m.get('date_str', 'N/A')}  |  Competition: {m.get('competition', 'N/A')}
+
+TEAM STATS
+                    {m['home_name']:>18}    {m['away_name']}
+Shots               {hs.get('shots', 0):>18}    {aws.get('shots', 0)}
+Shots on Target     {hs.get('shots_on_target', 0):>18}    {aws.get('shots_on_target', 0)}
+xG                  {hs.get('xg', 0):>18.2f}    {aws.get('xg', 0):.2f}
+Pass Accuracy       {hs.get('pass_accuracy', 0):>17.1f}%    {aws.get('pass_accuracy', 0):.1f}%
+Progressive Passes  {hs.get('progressive_passes', 0):>18}    {aws.get('progressive_passes', 0)}
+PPDA                {ppda_h:>18.2f}    {ppda_a:.2f}
+
+GOALS
+{goals_text}
+
+CARDS
+{cards_text}"""
+
+    if tab == "story":
+        # Add rolling momentum context
+        top_home = match.player_stats[match.player_stats['team_id'] == home_id].nlargest(3, 'xT')[['player_name', 'xT', 'passes', 'shots']].to_string(index=False)
+        top_away = match.player_stats[match.player_stats['team_id'] == away_id].nlargest(3, 'xT')[['player_name', 'xT', 'passes', 'shots']].to_string(index=False)
+        prompt = f"""{base}
+
+TOP PLAYERS BY xT
+{m['home_name']}:
+{top_home}
+
+{m['away_name']}:
+{top_away}
+
+---
+You are an expert football analyst. Write a compelling 3–4 paragraph match report covering:
+1. The overall narrative and result — was it deserved? What did the xG and PPDA tell us?
+2. Key tactical patterns — how did each team set up and what worked / didn't?
+3. The turning points — key moments that shaped the outcome
+4. Brief verdict on each team's performance
+
+Write in a professional sports journalism style. Be specific with numbers from the data. Do not use headers."""
+
+    elif tab == "attacking":
+        # Top SCA and xG players
+        sca_top = match.sca_df.groupby(['player_name', 'team_id'])['sca'].sum().reset_index()
+        sca_top['team'] = sca_top['team_id'].map({home_id: m['home_name'], away_id: m['away_name']})
+        sca_lines = sca_top.nlargest(8, 'sca')[['player_name', 'team', 'sca']].to_string(index=False)
+
+        xg_top = match.player_stats.nlargest(8, 'xg')[['player_name', 'xg', 'shots', 'shots_on_target']].copy()
+        xg_top['team'] = match.player_stats.nlargest(8, 'xg')['team_id'].map({home_id: m['home_name'], away_id: m['away_name']})
+        xg_lines = xg_top.to_string(index=False)
+
+        prompt = f"""{base}
+
+SHOT-CREATING ACTIONS (SCA) — TOP 8
+{sca_lines}
+
+TOP xG CONTRIBUTORS
+{xg_lines}
+
+---
+You are an expert football analyst. Write a focused 2–3 paragraph attacking analysis covering:
+1. Which team dominated the attacking phase and why — use shot counts, xG, and SCA data
+2. The key creators and finishers — who drove the attacking play and how?
+3. Where on the pitch did the best chances come from? Any patterns in how goals were created?
+
+Be specific with player names and numbers. Write in a professional tactical analysis style. Do not use headers."""
+
+    elif tab == "defensive":
+        # Defensive actions counts
+        df = match.events_df
+        home_df = df[df['team_id'] == home_id]
+        away_df = df[df['team_id'] == away_id]
+
+        def def_counts(tdf):
+            return {
+                'interceptions': (tdf['type_primary'] == 'interception').sum(),
+                'clearances': (tdf['type_primary'] == 'clearance').sum(),
+                'duels': tdf['duel_type'].notna().sum(),
+                'duels_won': (tdf['duel_won'] == True).sum(),
+            }
+
+        hdc = def_counts(home_df)
+        adc = def_counts(away_df)
+
+        prompt = f"""{base}
+
+DEFENSIVE ACTIONS
+                    {m['home_name']:>18}    {m['away_name']}
+Interceptions       {hdc['interceptions']:>18}    {adc['interceptions']}
+Clearances          {hdc['clearances']:>18}    {adc['clearances']}
+Duels               {hdc['duels']:>18}    {adc['duels']}
+Duels Won           {hdc['duels_won']:>18}    {adc['duels_won']}
+PPDA                {ppda_h:>18.2f}    {ppda_a:.2f}
+
+---
+You are an expert football analyst. Write a focused 2–3 paragraph defensive analysis covering:
+1. How well did each team defend? Use PPDA, interceptions, and clearance data.
+2. Pressing intensity — PPDA (lower = more aggressive pressing). What did each team's press look like?
+3. Where were the defensive vulnerabilities? Which team won more duels and in what areas?
+
+Note: PPDA = Passes Allowed Per Defensive Action (lower is a more intense press; elite pressing is below 5).
+Be specific with numbers. Write in a professional tactical analysis style. Do not use headers."""
+
+    elif tab == "players":
+        top5 = match.player_stats.nlargest(10, 'touches')[
+            ['player_name', 'team_id', 'touches', 'pass_accuracy', 'xg', 'xT', 'sca', 'duel_win_pct', 'interceptions']
+        ].copy()
+        top5['team'] = top5['team_id'].map({home_id: m['home_name'], away_id: m['away_name']})
+        top5.drop(columns=['team_id'], inplace=True)
+        top5_str = top5.round(2).to_string(index=False)
+
+        prompt = f"""{base}
+
+PLAYER PERFORMANCE (top 10 by touches)
+{top5_str}
+
+---
+You are an expert football analyst. Write a 2–3 paragraph player-focused analysis covering:
+1. The standout performer(s) — who had the biggest impact and why?
+2. Interesting individual battles — any key duels or match-ups that shaped the game?
+3. Any underperformers relative to expectations given the team result?
+
+Be specific with player names, stats, and context. Write in a professional style. Do not use headers."""
+
+    else:
+        prompt = base
+
+    return prompt
+
+
+_OPENAI_MODELS  = ["gpt-4o", "gpt-4o-mini"]
+_GEMINI_MODELS  = ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
+
+
+def _stream_openai(api_key: str, model: str, prompt: str):
+    """Stream response chunks from OpenAI."""
+    client = _openai_lib.OpenAI(api_key=api_key)
+    stream = client.chat.completions.create(
+        model=model,
+        max_tokens=1024,
+        messages=[{"role": "user", "content": prompt}],
+        stream=True,
+    )
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
+
+
+def _stream_gemini(api_key: str, model: str, prompt: str):
+    """Stream response chunks from Gemini."""
+    _genai_lib.configure(api_key=api_key)
+    gen_model = _genai_lib.GenerativeModel(model)
+    response = gen_model.generate_content(prompt, stream=True)
+    for chunk in response:
+        if chunk.text:
+            yield chunk.text
+
+
+def _ai_analysis_section(tab_key: str, label: str = "AI Analysis"):
+    """Render the AI analysis expander for a given tab."""
+    if not _AI_AVAILABLE:
+        return
+    provider  = st.session_state.get("ai_provider", "")
+    api_key   = st.session_state.get("ai_api_key", "")
+    ai_model  = st.session_state.get("ai_model", "")
+    if not api_key or not provider:
+        return
+    with st.expander(f"🤖 {label}", expanded=False):
+        if st.button("Generate Analysis", key=f"ai_btn_{tab_key}"):
+            with st.spinner("Analysing..."):
+                try:
+                    prompt = _build_prompt(match, tab_key)
+                    if provider == "OpenAI":
+                        st.write_stream(_stream_openai(api_key, ai_model, prompt))
+                    else:
+                        st.write_stream(_stream_gemini(api_key, ai_model, prompt))
+                except Exception as e:
+                    st.error(f"Analysis failed: {e}")
+
+
 # ─── Session State ────────────────────────────────────────────────────────────
 if 'match_data' not in st.session_state:
     st.session_state.match_data = None
@@ -172,6 +399,37 @@ with st.sidebar:
     else:
         st.info("Upload a Wyscout JSON file to begin analysis")
         TEAM_COLORS = {'home': '#4fc3f7', 'away': '#ffb300'}
+
+    if _AI_AVAILABLE:
+        st.markdown("---")
+        st.markdown("### 🤖 AI Analysis")
+
+        _provider_opts = []
+        if _OPENAI_AVAILABLE:
+            _provider_opts.append("OpenAI")
+        if _GEMINI_AVAILABLE:
+            _provider_opts.append("Gemini")
+
+        selected_provider = st.radio(
+            "Provider",
+            options=_provider_opts,
+            horizontal=True,
+            key="ai_provider",
+        )
+
+        _model_opts = _OPENAI_MODELS if selected_provider == "OpenAI" else _GEMINI_MODELS
+        st.selectbox("Model", options=_model_opts, key="ai_model")
+
+        _placeholders = {"OpenAI": "sk-...", "Gemini": "AIza..."}
+        st.text_input(
+            "API Key",
+            type="password",
+            placeholder=_placeholders.get(selected_provider, ""),
+            help="Free tiers: Gemini has a no-credit-card free tier. OpenAI requires billing but gpt-4o-mini is very cheap.",
+            key="ai_api_key",
+        )
+        if st.session_state.get("ai_api_key"):
+            st.success(f"{selected_provider} ready — analysis available on each tab")
 
 
 # ─── Main Content ─────────────────────────────────────────────────────────────
@@ -472,6 +730,7 @@ with tab1:
     st.pyplot(fig_stats, use_container_width=True)
     plt.close(fig_stats)
 
+    _ai_analysis_section("story", "AI Match Report")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -714,6 +973,7 @@ with tab2:
                 unsafe_allow_html=True
             )
 
+    _ai_analysis_section("attacking", "AI Attacking Analysis")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -810,6 +1070,8 @@ with tab3:
             height=400,
         )
         st.plotly_chart(fig_duels, use_container_width=True)
+
+    _ai_analysis_section("defensive", "AI Defensive Analysis")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1025,3 +1287,5 @@ with tab4:
             tbl[col] = tbl[col].round(2)
 
     st.dataframe(tbl, use_container_width=True, hide_index=True)
+
+    _ai_analysis_section("players", "AI Player Analysis")
