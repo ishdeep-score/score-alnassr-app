@@ -27,7 +27,7 @@ warnings.filterwarnings('ignore')
 # Constants
 # ---------------------------------------------------------------------------
 
-SORA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts')
+SORA_DIR = None  # custom font disabled — using matplotlib default
 
 BG         = '#010b14'
 PITCH_BG   = '#0a1628'
@@ -54,9 +54,6 @@ GOAL_ZONE_COORDS = {
 
 
 def _load_font(style: str = 'Regular') -> fm.FontProperties:
-    path = os.path.join(SORA_DIR, f'Sora-{style}.ttf')
-    if os.path.exists(path):
-        return fm.FontProperties(fname=path)
     return fm.FontProperties()
 
 
