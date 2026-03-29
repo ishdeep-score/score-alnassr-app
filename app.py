@@ -575,7 +575,8 @@ with tab1:
                 font=dict(color='#e8e8e8', size=13),
                 xaxis=dict(title='Minute', gridcolor='#3a5a7a', color='#7a8a9a', title_font_size=13),
                 yaxis=dict(title='Cumulative xG', gridcolor='#3a5a7a', color='#7a8a9a', title_font_size=13),
-                legend=dict(bgcolor='#0d1f35', bordercolor='#3a5a7a', font_size=13),
+                legend=dict(bgcolor='#0d1f35', bordercolor='#3a5a7a',
+                            font=dict(color='#e8e8e8', size=13)),
                 margin=dict(l=40, r=20, t=30, b=40),
                 height=380,
             )
@@ -598,7 +599,8 @@ with tab1:
             font=dict(color='#e8e8e8', size=13),
             xaxis=dict(title='Minute', gridcolor='#3a5a7a', color='#7a8a9a',
                        title_font_size=13, showgrid=True),
-            legend=dict(bgcolor='#0d1f35', bordercolor='#3a5a7a', font_size=13,
+            legend=dict(bgcolor='#0d1f35', bordercolor='#3a5a7a',
+                        font=dict(color='#e8e8e8', size=13),
                         orientation='h', yanchor='bottom', y=1.02),
             margin=dict(l=40, r=20, t=40, b=40),
             height=280,
@@ -612,17 +614,15 @@ with tab1:
             fig_poss = go.Figure()
             fig_poss.add_trace(go.Scatter(
                 x=rs['bucket'], y=rs['home_poss_pct'],
-                mode='lines+markers', name=home_name,
-                line=dict(color=home_color, width=2.5),
+                mode='lines', name=home_name,
+                line=dict(color=home_color, width=2.5, shape='spline', smoothing=1.3),
                 fill='tozeroy', fillcolor=_hex_to_rgba(home_color, 0.15),
-                marker=dict(size=6),
             ))
             fig_poss.add_trace(go.Scatter(
                 x=rs['bucket'], y=rs['away_poss_pct'],
-                mode='lines+markers', name=away_name,
-                line=dict(color=away_color, width=2.5),
+                mode='lines', name=away_name,
+                line=dict(color=away_color, width=2.5, shape='spline', smoothing=1.3),
                 fill='tozeroy', fillcolor=_hex_to_rgba(away_color, 0.12),
-                marker=dict(size=6),
             ))
             fig_poss.add_hline(y=50, line_dash='dot', line_color='#7a8a9a', opacity=0.4)
             fig_poss.add_vline(**_vline_45)
@@ -639,15 +639,13 @@ with tab1:
             fig_duel = go.Figure()
             fig_duel.add_trace(go.Scatter(
                 x=rs['bucket'], y=rs['home_duel_win_pct'],
-                mode='lines+markers', name=home_name,
-                line=dict(color=home_color, width=2.5),
-                marker=dict(size=6),
+                mode='lines', name=home_name,
+                line=dict(color=home_color, width=2.5, shape='spline', smoothing=1.3),
             ))
             fig_duel.add_trace(go.Scatter(
                 x=rs['bucket'], y=rs['away_duel_win_pct'],
-                mode='lines+markers', name=away_name,
-                line=dict(color=away_color, width=2.5),
-                marker=dict(size=6),
+                mode='lines', name=away_name,
+                line=dict(color=away_color, width=2.5, shape='spline', smoothing=1.3),
             ))
             fig_duel.add_hline(y=50, line_dash='dot', line_color='#7a8a9a', opacity=0.4)
             fig_duel.add_vline(**_vline_45)
@@ -666,17 +664,15 @@ with tab1:
             fig_atk = go.Figure()
             fig_atk.add_trace(go.Scatter(
                 x=rs['bucket'], y=rs['home_attacks_per_min'],
-                mode='lines+markers', name=home_name,
-                line=dict(color=home_color, width=2.5),
+                mode='lines', name=home_name,
+                line=dict(color=home_color, width=2.5, shape='spline', smoothing=1.3),
                 fill='tozeroy', fillcolor=_hex_to_rgba(home_color, 0.15),
-                marker=dict(size=6),
             ))
             fig_atk.add_trace(go.Scatter(
                 x=rs['bucket'], y=rs['away_attacks_per_min'],
-                mode='lines+markers', name=away_name,
-                line=dict(color=away_color, width=2.5),
+                mode='lines', name=away_name,
+                line=dict(color=away_color, width=2.5, shape='spline', smoothing=1.3),
                 fill='tozeroy', fillcolor=_hex_to_rgba(away_color, 0.12),
-                marker=dict(size=6),
             ))
             fig_atk.add_vline(**_vline_45)
             fig_atk.update_layout(
@@ -808,26 +804,37 @@ with tab2:
     home_intervals = _build_intervals(home_subs)
     away_intervals = _build_intervals(away_subs)
 
-    col_hpn, col_apn, col_mpn = st.columns([2, 2, 1])
-    with col_hpn:
-        h_idx = st.selectbox(
-            f"🏠 {home_name} lineup",
-            options=range(len(home_intervals)),
-            format_func=lambda i: home_intervals[i][0],
-            index=0, key='pn_home_interval',
-        )
-    with col_apn:
-        a_idx = st.selectbox(
-            f"✈️ {away_name} lineup",
-            options=range(len(away_intervals)),
-            format_func=lambda i: away_intervals[i][0],
-            index=0, key='pn_away_interval',
-        )
-    with col_mpn:
-        min_passes = st.slider("Min passes", 2, 8, 3, key='pn_min_passes')
+    pn_mode = st.radio(
+        "Show",
+        ["Full match", "By lineup interval"],
+        horizontal=True,
+        key='pn_mode',
+    )
 
-    _, h_start, h_end = home_intervals[h_idx]
-    _, a_start, a_end = away_intervals[a_idx]
+    if pn_mode == "Full match":
+        h_start, h_end = 0, 90
+        a_start, a_end = 0, 90
+        min_passes = st.slider("Min passes", 2, 8, 3, key='pn_min_passes')
+    else:
+        col_hpn, col_apn, col_mpn = st.columns([2, 2, 1])
+        with col_hpn:
+            h_idx = st.selectbox(
+                f"{home_name} lineup",
+                options=range(len(home_intervals)),
+                format_func=lambda i: home_intervals[i][0],
+                index=0, key='pn_home_interval',
+            )
+        with col_apn:
+            a_idx = st.selectbox(
+                f"{away_name} lineup",
+                options=range(len(away_intervals)),
+                format_func=lambda i: away_intervals[i][0],
+                index=0, key='pn_away_interval',
+            )
+        with col_mpn:
+            min_passes = st.slider("Min passes", 2, 8, 3, key='pn_min_passes')
+        _, h_start, h_end = home_intervals[h_idx]
+        _, a_start, a_end = away_intervals[a_idx]
 
     fig_pn = render_pass_network(
         match.events_df, m, TEAM_COLORS,
@@ -940,7 +947,8 @@ with tab2:
             yaxis=dict(autorange='reversed', gridcolor='#3a5a7a', color='#7a8a9a'),
             xaxis=dict(gridcolor='#3a5a7a', color='#7a8a9a', zeroline=True,
                        zerolinecolor='#3a5a7a'),
-            legend=dict(bgcolor='#0d1f35', bordercolor='#3a5a7a'),
+            legend=dict(bgcolor='#0d1f35', bordercolor='#3a5a7a',
+                        font=dict(color='#e8e8e8', size=12)),
             height=450,
         )
         st.plotly_chart(fig_xt, use_container_width=True)
@@ -1066,7 +1074,8 @@ with tab3:
             font_color='#e8e8e8',
             xaxis=dict(gridcolor='#3a5a7a', color='#7a8a9a', tickangle=-30),
             yaxis=dict(gridcolor='#3a5a7a', color='#7a8a9a'),
-            legend=dict(bgcolor='#0d1f35', bordercolor='#3a5a7a'),
+            legend=dict(bgcolor='#0d1f35', bordercolor='#3a5a7a',
+                        font=dict(color='#e8e8e8', size=12)),
             height=400,
         )
         st.plotly_chart(fig_duels, use_container_width=True)

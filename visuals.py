@@ -2126,12 +2126,15 @@ def render_set_piece_xg(stats: dict, meta: dict, team_colors: dict,
 # ---------------------------------------------------------------------------
 
 def render_flank_attacks(flank_attacks: pd.DataFrame, meta: dict,
-                          team_colors: dict, figsize=(16, 8)) -> plt.Figure:
+                          team_colors: dict, figsize=(14, 10)) -> plt.Figure:
     """
-    Show the attacking final third (x: 66-100) divided into 3 horizontal zones
-    (left / centre / right flank). Each zone is filled with the team color at
-    opacity proportional to the number of attacks on that flank.
-    Both teams shown side-by-side.
+    Attacks per flank shown on a VerticalPitch zoomed into the final third.
+    Attacking direction runs bottom → top. Both teams side-by-side.
+
+    On VerticalPitch (wyscout): axes x-axis = wyscout y (0-100, left-right),
+    axes y-axis = wyscout x (0-100, own goal → opp goal).
+    Final third = wyscout x 66-100 → axes y 66-100 (top portion of pitch).
+    Flanks by wyscout y: left=0-33, centre=33-67, right=67-100.
     """
     fp_bold = _load_font('Bold')
     fp_reg = _load_font('Regular')
@@ -2143,18 +2146,23 @@ def render_flank_attacks(flank_attacks: pd.DataFrame, meta: dict,
     home_name = meta['home_name']
     away_name = meta['away_name']
 
-    pitch = _pitch()
-    fig, axes = pitch.draw(nrows=1, ncols=2, figsize=figsize)
+    vp = VerticalPitch(
+        pitch_type='wyscout',
+        pitch_color=PITCH_BG, line_color=LINE_COLOR,
+        line_zorder=2, half=True,
+    )
+    fig, axes = vp.draw(nrows=1, ncols=2, figsize=figsize)
     fig.patch.set_facecolor(BG)
 
-    # Wyscout zones for the final third (x: 66-100, y: 0-100)
-    # Flank mapping in Wyscout: left=bottom (y 0-33), center=mid (y 33-67), right=top (y 67-100)
+    # Flank zones in VerticalPitch axes coords:
+    # Rectangle(xy=(axes_x_start, axes_y_start), width, height)
+    # axes_x = wyscout_y, axes_y = wyscout_x
+    # Zones cover wyscout x 50-100 (half pitch), wyscout y 0-33/33-67/67-100
     flank_zones = {
-        'right': (66, 0, 34, 33),    # x_start, y_start, x_width, y_height
-        'center': (66, 33, 34, 34),
-        'left': (66, 67, 34, 33),
+        'left':   {'ax_x': 0,  'ax_y': 50, 'w': 33, 'h': 50, 'label': 'Left'},
+        'center': {'ax_x': 33, 'ax_y': 50, 'w': 34, 'h': 50, 'label': 'Centre'},
+        'right':  {'ax_x': 67, 'ax_y': 50, 'w': 33, 'h': 50, 'label': 'Right'},
     }
-    flank_labels = {'left': 'Left', 'center': 'Centre', 'right': 'Right'}
 
     for ax, team_id, color, tname in [
         (axes[0], home_id, home_color, home_name),
@@ -2162,46 +2170,40 @@ def render_flank_attacks(flank_attacks: pd.DataFrame, meta: dict,
     ]:
         ax.set_facecolor(PITCH_BG)
 
-        # Zoom into the final third
-        ax.set_xlim(62, 103)
-        ax.set_ylim(-2, 102)
-
-        # Get this team's flank counts
         team_data = flank_attacks[flank_attacks['team_id'] == team_id]
         counts = {row['flank']: row['count'] for _, row in team_data.iterrows()}
         max_count = max(counts.values(), default=1)
 
-        for flank, (x0, y0, xw, yh) in flank_zones.items():
+        for flank, z in flank_zones.items():
             cnt = counts.get(flank, 0)
             alpha = 0.12 + 0.62 * (cnt / max_count) if max_count > 0 else 0.12
 
-            zone_rect = Rectangle((x0, y0), xw, yh,
-                                   facecolor=color, alpha=alpha,
-                                   edgecolor=color, lw=1.2, zorder=3)
-            ax.add_patch(zone_rect)
+            ax.add_patch(Rectangle(
+                (z['ax_x'], z['ax_y']), z['w'], z['h'],
+                facecolor=color, alpha=alpha,
+                edgecolor=color, lw=1.2, zorder=3,
+            ))
 
-            # Count label
-            cy = y0 + yh / 2
-            cx = x0 + xw / 2
-            ax.text(cx, cy + 4, str(cnt),
+            cx = z['ax_x'] + z['w'] / 2   # horizontal centre of zone
+            cy = z['ax_y'] + z['h'] / 2   # vertical centre of zone
+
+            ax.text(cx, cy + 5, str(cnt),
                     ha='center', va='center', fontproperties=fp_bold,
                     fontsize=22, color='white', zorder=5,
                     path_effects=[pe.withStroke(linewidth=3, foreground='black')])
-            ax.text(cx, cy - 4, flank_labels[flank],
+            ax.text(cx, cy - 5, z['label'],
                     ha='center', va='center', fontproperties=fp_reg,
-                    fontsize=12, color=TEXT_MAIN, alpha=0.85, zorder=5)
+                    fontsize=12, color=TEXT_MAIN, alpha=0.9, zorder=5)
 
-        # Attack direction arrow
-        ax.annotate('', xy=(100, -1), xytext=(66, -1),
-                    arrowprops=dict(arrowstyle='->', color=TEXT_DIM, lw=1.5))
-        ax.text(83, -1.8, 'Attack →', ha='center', fontproperties=fp_reg,
-                fontsize=10, color=TEXT_DIM)
+        # Attacking direction arrow (pointing upward in VerticalPitch)
+        ax.annotate('', xy=(50, 98), xytext=(50, 52),
+                    arrowprops=dict(arrowstyle='->', color=color, lw=1.8))
+        ax.text(50, 50, 'Attacking', ha='center', va='top',
+                fontproperties=fp_reg, fontsize=9, color=color, style='italic')
 
-        ax.set_title(tname, fontproperties=fp_bold, fontsize=16,
-                     color=color, pad=10)
+        ax.set_title(tname, fontproperties=fp_bold, fontsize=15,
+                     color=color, pad=8)
 
-    fig.suptitle('Attacks per Flank  (Final Third)',
-                 fontproperties=fp_bold, fontsize=17, color=TEXT_MAIN, y=1.02)
     plt.tight_layout()
     return fig
 

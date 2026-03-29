@@ -872,41 +872,39 @@ def compute_pass_network(df: pd.DataFrame, team_id: int, period: str = '1H',
 
 def compute_ppda(df: pd.DataFrame, home_id: int, away_id: int) -> dict:
     """
-    PPDA = opponent passes in own defensive 40% / own pressing actions in same zone.
+    PPDA = opponent passes in their own half / own pressing actions in that same half.
     Lower = more aggressive high press.
 
-    Defensive 40% for home team: x < 40 (own half, Wyscout convention pre-mirroring)
-    We use x_plot here: home attacks left (x_plot=x), so home defensive zone = x_plot < 40.
-    Away attacks right (x_plot=100-x), so away defensive zone = x_plot > 60.
+    Uses the halfway line (x_plot = 50) as the boundary — standard PPDA definition.
+    Home attacks right: home presses in x_plot > 50, counts away passes in x_plot < 50.
+    Away attacks left:  away presses in x_plot < 50, counts home passes in x_plot > 50.
     """
     ppda = {}
 
     for team_id in [home_id, away_id]:
         if team_id == home_id:
-            # Home team presses in high zone: opponent (away) has ball in away's defensive zone
-            # Away team's defensive half: their x_plot > 60 (since away is mirrored)
             opp_id = away_id
             opp_passes = df[
                 (df['team_id'] == opp_id) &
                 (df['type_primary'].isin(['pass', 'free_kick', 'corner', 'throw_in', 'goal_kick'])) &
-                (df['x_plot'] < 40)  # away team's defensive zone (pre-mirror x < 40 = their own half)
+                (df['x_plot'] < 50)  # away in their own half
             ]
             pressing_actions = df[
                 (df['team_id'] == team_id) &
                 (df['type_primary'].isin(['duel', 'interception'])) &
-                (df['x_plot'] > 60)  # home pressing in away's defensive third
+                (df['x_plot'] > 50)  # home pressing in away's half
             ]
         else:
             opp_id = home_id
             opp_passes = df[
                 (df['team_id'] == opp_id) &
                 (df['type_primary'].isin(['pass', 'free_kick', 'corner', 'throw_in', 'goal_kick'])) &
-                (df['x_plot'] > 60)  # home's defensive zone
+                (df['x_plot'] > 50)  # home in their own half
             ]
             pressing_actions = df[
                 (df['team_id'] == team_id) &
                 (df['type_primary'].isin(['duel', 'interception'])) &
-                (df['x_plot'] < 40)
+                (df['x_plot'] < 50)  # away pressing in home's half
             ]
 
         n_opp_passes = len(opp_passes)
